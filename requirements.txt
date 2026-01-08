@@ -1,0 +1,24 @@
+# MIR - Music Information Retrieval System
+# 音楽解析・自動タグ付けシステム
+
+# Core audio analysis
+essentia>=2.1b6
+librosa>=0.10.0
+numpy>=1.25
+
+# Beat/downbeat detection
+madmom>=0.16.1
+
+# Audio source separation (for vocal/drum detection)
+demucs>=4.0.0
+
+# Metadata handling
+mutagen>=1.47.0
+
+# Utilities
+pyyaml>=6.0
+tqdm>=4.66.0
+
+# Optional: for genre classification models
+# tensorflow>=2.15.0
+# scikit-learn>=1.3.0
