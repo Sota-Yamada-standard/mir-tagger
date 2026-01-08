@@ -50,7 +50,4 @@ test_output.json
 *_backup_*.m4a
 
 # Test sample audio files (copyright)
-tests/samples/*.mp3
-tests/samples/*.flac
-tests/samples/*.m4a
-tests/samples/*.wav
+tests/samples/
