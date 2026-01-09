@@ -29,8 +29,8 @@ alwaysApply: true
 | KeyAnalyzer | `[Key:Am]` `[Key:Eb]` など |
 | GenreAnalyzer | `[Genre:pop]` `[Genre:anime]` など（複数可）+ `[Attr:vocal-female]` など |
 | MoodAnalyzer | `[Mood:happy/sad/relaxed/aggressive]` （複数可） |
-| BeatAnalyzer | `[Downbeat:1-4]` `[BPMChange:Yes]` |
-| IntroAnalyzer | `[SpeechIntro:Xs]` `[MusicAt:Xs]` `[Intro:Acapella/Singing/Drums/Inst/Full]` |
+| BeatAnalyzer | `[Downbeat:1-4]` `[Meter:Irregular]` `[BPMChange:Yes]` |
+| IntroAnalyzer | `[SpeechIntro:Xs]` `[MusicAt:Xs]` `[Intro:Acapella/Singing/Vocal/Drums/Inst/Full]` `[BeatAt:Xs]` |
 
 ### テスト用サンプル
 

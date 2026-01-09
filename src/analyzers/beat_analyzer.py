@@ -1,10 +1,10 @@
 """
 拍解析アナライザー
-Downbeat検出、BPM変化検出
+Downbeat検出、BPM変化検出、変拍子検出
 セリフ部分を自動スキップして音楽部分のみを分析
 """
 import numpy as np
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 from src.core.base_analyzer import BaseAnalyzer, AnalyzerRegistry
 
 try:
@@ -28,21 +28,26 @@ class BeatAnalyzer(BaseAnalyzer):
     検出項目:
     - Downbeat: 曲（音楽部分）が何拍目から始まるか（1-4）
     - BPM変化: 途中でテンポが変わるか
+    - 変拍子: 4/4以外の拍子の可能性
     - ビート信頼度: ビート検出の信頼度
     
     特徴:
     - セリフ部分を自動検出してスキップ
     - 音楽開始位置から正確にDownbeatを計算
+    - 変拍子検出時はダウンビート判定の信頼度を下げる
     """
     
     name = "beat"
-    description = "Beat analysis (downbeat, tempo changes, speech skip)"
+    description = "Beat analysis (downbeat, tempo changes, irregular meter, speech skip)"
     tag_prefix = "Beat"
     
     # 閾値
-    BPM_CHANGE_THRESHOLD = 5.0
+    BPM_CHANGE_THRESHOLD = 10.0  # BPM変化検出の閾値
+    BPM_CHANGE_MIN_DURATION = 8  # BPM変化と判定する最小継続拍数
     SPEECH_THRESHOLD = 0.3
     MUSIC_THRESHOLD = 0.5
+    # 変拍子検出の閾値
+    IRREGULAR_METER_THRESHOLD = 0.08  # ビート間隔の変動率がこれ以上なら変拍子の可能性
     
     # PANNsモデルキャッシュ
     _panns_model = None
@@ -114,6 +119,15 @@ class BeatAnalyzer(BaseAnalyzer):
             audio_resampled, sr, beat_times
         )
         
+        # 変拍子検出
+        irregular_meter, meter_info = self._detect_irregular_meter(
+            audio_resampled, sr, beat_times
+        )
+        
+        # 変拍子の場合はダウンビート信頼度を下げる
+        if irregular_meter:
+            confidence = min(confidence, 0.3)
+        
         # beat_timesを元の時間軸に戻す
         beat_times_absolute = beat_times + music_start_time
         first_beat_time_absolute = first_beat_time + music_start_time
@@ -126,6 +140,8 @@ class BeatAnalyzer(BaseAnalyzer):
             'tempo': tempo_val,
             'tempo_stable': tempo_stable,
             'tempo_changes': tempo_changes,
+            'irregular_meter': irregular_meter,
+            'meter_info': meter_info,
             'beat_count': len(beat_times),
             'confidence': confidence,
             'value': downbeat
@@ -285,44 +301,164 @@ class BeatAnalyzer(BaseAnalyzer):
     ) -> Tuple[bool, List[Dict]]:
         """
         BPM変化を検出
+        
+        改良版：
+        - 単発の揺らぎではなく、持続的な変化のみを検出
+        - 変化が一定時間続くかをチェック
         """
-        if len(beat_times) < 16:
+        if len(beat_times) < 32:  # 最低32拍必要
             return True, []
         
-        tempo_changes = []
-        window_size = 8
+        # 16拍ごとのウィンドウでBPMを計算（より安定した推定）
+        window_size = 16
+        hop_size = 8
         tempos = []
         
-        for i in range(0, len(beat_times) - window_size, window_size // 2):
+        for i in range(0, len(beat_times) - window_size, hop_size):
             window_beats = beat_times[i:i + window_size]
-            if len(window_beats) >= 2:
+            if len(window_beats) >= 8:
                 intervals = np.diff(window_beats)
-                avg_interval = np.mean(intervals)
-                if avg_interval > 0:
-                    local_tempo = 60.0 / avg_interval
-                    tempos.append({
-                        'time': float(window_beats[0]),
-                        'tempo': local_tempo
-                    })
+                # 外れ値を除外（中央値±2σの範囲のみ使用）
+                median_interval = np.median(intervals)
+                std_interval = np.std(intervals)
+                valid_intervals = intervals[
+                    np.abs(intervals - median_interval) < 2 * std_interval
+                ]
+                if len(valid_intervals) >= 4:
+                    avg_interval = np.mean(valid_intervals)
+                    if avg_interval > 0:
+                        local_tempo = 60.0 / avg_interval
+                        tempos.append({
+                            'time': float(window_beats[0]),
+                            'tempo': local_tempo,
+                            'beat_idx': i
+                        })
         
-        if len(tempos) < 2:
+        if len(tempos) < 3:
             return True, []
         
-        base_tempo = tempos[0]['tempo']
+        # 基準BPM（最初の数ウィンドウの平均）
+        base_tempo = np.mean([t['tempo'] for t in tempos[:3]])
+        
+        tempo_changes = []
         is_stable = True
         
-        for i, t in enumerate(tempos[1:], 1):
+        # 持続的な変化を検出
+        i = 0
+        while i < len(tempos):
+            t = tempos[i]
             diff = abs(t['tempo'] - base_tempo)
+            
             if diff > self.bpm_change_threshold:
-                is_stable = False
-                tempo_changes.append({
-                    'time': t['time'],
-                    'from_tempo': round(tempos[i-1]['tempo'], 1),
-                    'to_tempo': round(t['tempo'], 1),
-                    'change': round(t['tempo'] - tempos[i-1]['tempo'], 1)
-                })
+                # 変化が持続するか確認（次の2ウィンドウも同様に変化しているか）
+                sustained = True
+                if i + 2 < len(tempos):
+                    for j in range(i + 1, min(i + 3, len(tempos))):
+                        if abs(tempos[j]['tempo'] - t['tempo']) > 5:
+                            sustained = False
+                            break
+                else:
+                    sustained = False
+                
+                if sustained:
+                    is_stable = False
+                    tempo_changes.append({
+                        'time': t['time'],
+                        'from_tempo': round(base_tempo, 1),
+                        'to_tempo': round(t['tempo'], 1),
+                        'change': round(t['tempo'] - base_tempo, 1)
+                    })
+                    # 新しい基準BPMに更新
+                    base_tempo = t['tempo']
+            
+            i += 1
         
         return is_stable, tempo_changes
+    
+    def _detect_irregular_meter(
+        self,
+        audio: np.ndarray,
+        sr: int,
+        beat_times: np.ndarray
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """
+        変拍子を検出
+        
+        検出方法:
+        1. ビート間隔の変動率を分析（主要な判定基準）
+        2. 複数のピーク間隔がある場合に変拍子と判定
+        
+        注意：
+        - onset強度パターンによる拍子推定は精度が低いため参考値
+        - 明確な変拍子パターン（複数のビート間隔）がある場合のみ検出
+        
+        Returns:
+            (変拍子かどうか, 詳細情報)
+        """
+        meter_info = {
+            'interval_variation': 0.0,
+            'estimated_beats_per_bar': 4,
+            'meter_scores': {},
+            'is_irregular': False,
+            'reason': ''
+        }
+        
+        if len(beat_times) < 32:
+            return False, meter_info
+        
+        # 1. ビート間隔の変動率
+        intervals = np.diff(beat_times)
+        avg_interval = np.mean(intervals)
+        interval_std = np.std(intervals)
+        interval_variation = interval_std / avg_interval if avg_interval > 0 else 0
+        meter_info['interval_variation'] = float(interval_variation)
+        
+        # 2. ビート間隔の分布を分析
+        # 変拍子の場合、複数の明確なピークがある
+        if interval_variation > self.IRREGULAR_METER_THRESHOLD:
+            # ヒストグラムで複数のピークを探す
+            hist, edges = np.histogram(intervals, bins=15)
+            
+            # 有意なピーク（全体の8%以上）を探す
+            significant_peaks = []
+            for i, count in enumerate(hist):
+                if count > len(intervals) * 0.08:
+                    center = (edges[i] + edges[i+1]) / 2
+                    significant_peaks.append((center, count))
+            
+            if len(significant_peaks) >= 2:
+                # 複数のピークがある = 異なる長さのビートが混在
+                peak_intervals = [p[0] for p in significant_peaks]
+                min_peak = min(peak_intervals)
+                max_peak = max(peak_intervals)
+                ratio = max_peak / min_peak if min_peak > 0 else 1
+                
+                # 比率が1.15以上1.85以下なら変拍子の可能性が高い
+                # （例：3:4の比率は約1.33、5:4は1.25）
+                if 1.15 <= ratio <= 1.85:
+                    meter_info['is_irregular'] = True
+                    meter_info['reason'] = f'Multiple beat intervals detected (ratio: {ratio:.2f})'
+                    
+                    # 拍子を推定
+                    # 例：0.5秒と0.67秒のピークがある場合、3+4=7拍子系の可能性
+                    total_beats = 0
+                    for interval, count in significant_peaks[:2]:
+                        # このピークが何拍に相当するか推定
+                        beat_ratio = interval / min_peak
+                        if 0.9 <= beat_ratio <= 1.1:
+                            total_beats += 1
+                        elif 1.2 <= beat_ratio <= 1.4:
+                            total_beats += 1.5  # 3:2の関係
+                        elif 1.4 <= beat_ratio <= 1.6:
+                            total_beats += 1.5
+                    
+                    if total_beats > 0:
+                        # 小節あたりの拍数を推定（概算）
+                        estimated = int(round(total_beats * 2 + 2))
+                        if 5 <= estimated <= 9:
+                            meter_info['estimated_beats_per_bar'] = estimated
+        
+        return meter_info['is_irregular'], meter_info
     
     def _fallback_result(self) -> Dict[str, Any]:
         """フォールバック結果"""
@@ -334,6 +470,8 @@ class BeatAnalyzer(BaseAnalyzer):
             'tempo': 120.0,
             'tempo_stable': True,
             'tempo_changes': [],
+            'irregular_meter': False,
+            'meter_info': {},
             'beat_count': 0,
             'confidence': 0.0,
             'value': 1
@@ -345,8 +483,14 @@ class BeatAnalyzer(BaseAnalyzer):
         
         downbeat = result.get('downbeat', 1)
         confidence = result.get('confidence', 0)
+        irregular_meter = result.get('irregular_meter', False)
         
-        if confidence > 0.5:
+        # 変拍子の場合
+        if irregular_meter:
+            tags.append("[Meter:Irregular]")
+            # 変拍子の場合、ダウンビートの信頼度が低いので出力しない
+        elif confidence > 0.5:
+            # 通常の4/4拍子
             tags.append(f"[Downbeat:{downbeat}]")
         
         if not result.get('tempo_stable', True):

@@ -83,6 +83,8 @@ class GenreAnalyzer(BaseAnalyzer):
     }
     
     # PANNsラベルマッピング（主要なもの）
+    # 属性（_で始まる）はジャンルではなく楽器/特徴として扱う
+    # Singingは削除（MusiCNNのvocal-female/vocal-maleで代替）
     PANNS_GENRE_MAP = {
         "Pop music": "pop",
         "Rock music": "rock",
@@ -100,7 +102,7 @@ class GenreAnalyzer(BaseAnalyzer):
         "Heavy metal": "metal",
         "Techno": "techno",
         "House music": "house",
-        "Singing": "_vocal",
+        # 楽器検出（ジャンルには出力しない、内部参照用）
         "Guitar": "_guitar",
         "Drum kit": "_drums",
         "Synthesizer": "_synth",
@@ -153,7 +155,7 @@ class GenreAnalyzer(BaseAnalyzer):
         use_panns: bool = True,
         use_musicnn: bool = True,
         custom_rules: Dict = None,
-        device: str = "cpu",
+        device: str = "auto",
         musicnn_model_path: str = "/Users/hanyanty/essentia_models/msd-musicnn-1.pb"
     ):
         """
@@ -163,7 +165,7 @@ class GenreAnalyzer(BaseAnalyzer):
             use_panns: PANNsモデルを使用するか
             use_musicnn: MusiCNNモデルを使用するか
             custom_rules: カスタムルール辞書
-            device: PANNsの実行デバイス ("cpu" or "mps")
+            device: PANNsの実行デバイス ("auto", "mps", "cpu")
             musicnn_model_path: MusiCNNモデルのパス
         """
         self.threshold = threshold
@@ -171,8 +173,17 @@ class GenreAnalyzer(BaseAnalyzer):
         self.use_panns = use_panns and PANNS_AVAILABLE
         self.use_musicnn = use_musicnn and MUSICNN_AVAILABLE
         self.custom_rules = custom_rules or {}
-        self.device = device
         self.musicnn_model_path = musicnn_model_path
+        
+        # デバイス自動検出
+        if device == "auto":
+            import torch
+            if torch.backends.mps.is_available():
+                self.device = "mps"
+            else:
+                self.device = "cpu"
+        else:
+            self.device = device
     
     def _get_panns_model(self):
         """PANNsモデルを取得（遅延ロード）"""

@@ -48,7 +48,17 @@ class IntroAnalyzer(BaseAnalyzer):
     SPEECH_THRESHOLD = 0.3    # Speechと判定する閾値
     MUSIC_THRESHOLD = 0.5     # Musicと判定する閾値
     SINGING_THRESHOLD = 0.1   # Singingと判定する閾値
-    ENERGY_THRESHOLD = 0.02   # Demucsソース検出閾値
+    DRUMS_PANNS_THRESHOLD = 0.05  # PANNsでDrumsと判定する閾値
+    # Demucsソース検出閾値
+    ENERGY_THRESHOLD_DRUMS = 0.05   # ドラムの閾値（以前は0.02で敏感すぎた）
+    ENERGY_THRESHOLD_VOCALS = 0.02  # ボーカルの閾値
+    ENERGY_THRESHOLD_OTHER = 0.05   # その他楽器の閾値
+    
+    # ビートドロップ検出
+    BEAT_DROP_LOW_THRESHOLD = 0.03   # 「低い」と判断するドラムエネルギー
+    BEAT_DROP_HIGH_RATIO = 3.0       # 低い状態からこの倍以上になったらドロップ
+    BEAT_DROP_MIN_QUIET_TIME = 4.0   # 最低限の静かな時間（秒）
+    BEAT_DROP_ANALYSIS_DURATION = 60 # ビートドロップ検出の分析範囲（秒）
     
     # 分析設定
     ANALYSIS_DURATION = 15    # 分析する秒数
@@ -109,6 +119,8 @@ class IntroAnalyzer(BaseAnalyzer):
             'intro_type': 'unknown',
             'timeline': [],
             'source_energy': {},
+            'beat_drop_time': 0.0,  # ビートが入るタイミング（秒）
+            'has_soft_intro': False,  # 静かなイントロがあるか
             'value': 'unknown'
         }
         
@@ -131,6 +143,12 @@ class IntroAnalyzer(BaseAnalyzer):
                 result['drum_intro'] = True
             if source_result.get('vocal_intro'):
                 result['vocal_intro'] = True
+            
+            # ビートドロップ検出（静かに始まって後からビートが入るパターン）
+            beat_drop_result = self._detect_beat_drop(audio, sample_rate)
+            result['beat_drop_time'] = beat_drop_result.get('beat_drop_time', 0.0)
+            result['has_soft_intro'] = beat_drop_result.get('has_soft_intro', False)
+            result['drums_timeline'] = beat_drop_result.get('drums_timeline', [])
         
         # イントロタイプの最終判定
         result['intro_type'] = self._determine_intro_type(result)
@@ -297,15 +315,140 @@ class IntroAnalyzer(BaseAnalyzer):
             energy = float(np.sqrt(np.mean(source ** 2)))
             source_energy[name] = energy
         
+        # 各ソースの判定（閾値を個別に設定）
+        drums_energy = source_energy.get('drums', 0)
+        vocals_energy = source_energy.get('vocals', 0)
+        other_energy = source_energy.get('other', 0)
+        
+        # ドラムの判定：
+        # - エネルギーが閾値以上
+        # - かつ、other（メロディ楽器）より相対的に高い場合のみ
+        drum_intro = (
+            drums_energy > self.ENERGY_THRESHOLD_DRUMS and
+            drums_energy > other_energy * 0.5  # ドラムがotherの半分以上
+        )
+        
         return {
             'source_energy': source_energy,
-            'vocal_intro': source_energy.get('vocals', 0) > self.ENERGY_THRESHOLD,
-            'drum_intro': source_energy.get('drums', 0) > self.ENERGY_THRESHOLD,
-            'bass_intro': source_energy.get('bass', 0) > self.ENERGY_THRESHOLD,
+            'vocal_intro': vocals_energy > self.ENERGY_THRESHOLD_VOCALS,
+            'drum_intro': drum_intro,
+            'bass_intro': source_energy.get('bass', 0) > self.ENERGY_THRESHOLD_DRUMS,
+            'other_intro': other_energy > self.ENERGY_THRESHOLD_OTHER,
         }
     
+    def _detect_beat_drop(
+        self,
+        audio: np.ndarray,
+        sample_rate: int
+    ) -> Dict[str, Any]:
+        """
+        ビートドロップを検出
+        静かに始まって途中からビートが入るパターンを検出
+        
+        例：「もう恋なんてしない」のように最初は静かで、
+        途中からドラムが入る曲
+        
+        Returns:
+            beat_drop_time: ビートが入るタイミング（秒）
+            has_soft_intro: 静かなイントロがあるか
+            drums_timeline: ドラムエネルギーの時間変化
+        """
+        model = self._get_demucs_model()
+        if model is None:
+            return {'beat_drop_time': 0.0, 'has_soft_intro': False, 'drums_timeline': []}
+        
+        # 分析範囲（最初の60秒）
+        analysis_samples = int(sample_rate * self.BEAT_DROP_ANALYSIS_DURATION)
+        audio_segment = audio[:analysis_samples]
+        
+        # 44100Hzにリサンプリング
+        if sample_rate != 44100:
+            audio_segment = librosa.resample(audio_segment, orig_sr=sample_rate, target_sr=44100)
+            sr = 44100
+        else:
+            sr = sample_rate
+        
+        # ステレオに変換
+        if audio_segment.ndim == 1:
+            audio_stereo = np.stack([audio_segment, audio_segment])
+        else:
+            audio_stereo = audio_segment
+        
+        # Demucsで音源分離
+        waveform = torch.tensor(audio_stereo, dtype=torch.float32)
+        waveform = waveform.unsqueeze(0).to(self.device)
+        
+        with torch.no_grad():
+            sources = apply_model(model, waveform, device=self.device)
+        
+        # ドラムトラックを取得
+        drums_idx = model.sources.index('drums')
+        drums = sources[0, drums_idx].cpu().numpy()
+        
+        # 4秒ごとのエネルギーを計算
+        chunk_duration = 4  # 秒
+        chunk_samples = int(sr * chunk_duration)
+        
+        drums_timeline = []
+        for i in range(0, len(drums[0]), chunk_samples):
+            chunk = drums[:, i:i+chunk_samples]
+            if chunk.shape[1] < chunk_samples // 2:
+                continue
+            energy = float(np.sqrt(np.mean(chunk ** 2)))
+            time_sec = i / sr
+            drums_timeline.append({
+                'time': time_sec,
+                'energy': energy
+            })
+        
+        if len(drums_timeline) < 2:
+            return {'beat_drop_time': 0.0, 'has_soft_intro': False, 'drums_timeline': drums_timeline}
+        
+        # ビートドロップを検出
+        # 条件：最初が低い → 途中から高くなる
+        first_energy = drums_timeline[0]['energy']
+        
+        # 最初のエネルギーが低い場合のみ検出
+        if first_energy > self.BEAT_DROP_LOW_THRESHOLD:
+            return {'beat_drop_time': 0.0, 'has_soft_intro': False, 'drums_timeline': drums_timeline}
+        
+        # 静かな状態が続く時間を確認
+        quiet_end_time = 0.0
+        for entry in drums_timeline:
+            if entry['energy'] < self.BEAT_DROP_LOW_THRESHOLD:
+                quiet_end_time = entry['time'] + chunk_duration
+            else:
+                break
+        
+        # 最低限の静かな時間がない場合はスキップ
+        if quiet_end_time < self.BEAT_DROP_MIN_QUIET_TIME:
+            return {'beat_drop_time': 0.0, 'has_soft_intro': False, 'drums_timeline': drums_timeline}
+        
+        # ビートが入るタイミングを検出
+        beat_drop_time = 0.0
+        for i, entry in enumerate(drums_timeline):
+            if entry['energy'] > first_energy * self.BEAT_DROP_HIGH_RATIO:
+                beat_drop_time = entry['time']
+                break
+        
+        # ビートドロップが検出された場合
+        if beat_drop_time > 0:
+            return {
+                'beat_drop_time': beat_drop_time,
+                'has_soft_intro': True,
+                'drums_timeline': drums_timeline
+            }
+        
+        return {'beat_drop_time': 0.0, 'has_soft_intro': False, 'drums_timeline': drums_timeline}
+    
     def _determine_intro_type(self, result: Dict[str, Any]) -> str:
-        """イントロタイプを最終判定"""
+        """
+        イントロタイプを最終判定
+        
+        PANNsとDemucsの両方の結果を考慮して判定：
+        - PANNs: 時間軸でのSpeech/Singing/Music/Drums検出
+        - Demucs: 音源分離によるvocals/drums/bass/other検出
+        """
         # 優先順位: セリフ > アカペラ > 伴奏付き歌唱 > ドラム > インスト
         
         # セリフで始まる
@@ -320,18 +463,39 @@ class IntroAnalyzer(BaseAnalyzer):
         if result.get('singing_intro') and not result.get('singing_acapella'):
             return 'singing'
         
-        # Demucsの結果を使った判定
-        if result.get('vocal_intro') and not result.get('drum_intro'):
+        # PANNsのタイムライン情報を取得
+        timeline = result.get('timeline', [])
+        panns_drums_detected = False
+        if timeline:
+            # 最初の数チャンクでドラムが検出されているか
+            first_chunks = timeline[:3]
+            avg_drums = sum(c.get('drums', 0) for c in first_chunks) / len(first_chunks)
+            panns_drums_detected = avg_drums > self.DRUMS_PANNS_THRESHOLD
+        
+        # ドラム判定：DemucsとPANNsの両方で検出された場合のみ
+        demucs_drum_intro = result.get('drum_intro', False)
+        drum_intro = demucs_drum_intro and panns_drums_detected
+        
+        vocal_intro = result.get('vocal_intro', False)
+        other_intro = result.get('other_intro', False)
+        
+        # ボーカルのみ（ドラムなし）
+        if vocal_intro and not drum_intro:
             return 'vocal'
         
-        if result.get('drum_intro') and not result.get('vocal_intro'):
+        # ドラムのみ（ボーカルなし）
+        if drum_intro and not vocal_intro:
             return 'drums'
         
         # 全部入ってる場合
-        if result.get('vocal_intro') and result.get('drum_intro'):
+        if vocal_intro and drum_intro:
             return 'full'
         
-        return 'instrumental'
+        # other（ギター、ピアノなどのメロディ楽器）が高い場合
+        if other_intro and not vocal_intro and not drum_intro:
+            return 'instrumental'
+        
+        return 'full'  # デフォルトはfull（すべての要素が含まれる）
     
     def to_tag(self, result: Dict[str, Any]) -> str:
         """タグ文字列を生成"""
@@ -362,5 +526,12 @@ class IntroAnalyzer(BaseAnalyzer):
             tags.append("[Intro:Inst]")
         elif intro_type == 'full':
             tags.append("[Intro:Full]")
+        
+        # ビートドロップ（静かに始まって途中からビートが入る）
+        # セリフイントロの場合はMusicAtタグで音楽開始位置を表しているので出力しない
+        if result.get('has_soft_intro') and not result.get('speech_intro'):
+            beat_drop_time = result.get('beat_drop_time', 0)
+            if beat_drop_time > 0:
+                tags.append(f"[BeatAt:{beat_drop_time:.0f}s]")
         
         return ''.join(tags)
