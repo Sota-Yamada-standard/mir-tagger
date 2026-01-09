@@ -1,24 +1,47 @@
-# MIR - Music Information Retrieval System
+# MIR-Tagger - Music Information Retrieval System
 # 音楽解析・自動タグ付けシステム
+# 最終更新: 2026-01-09
 
-# Core audio analysis
-essentia>=2.1b6
-librosa>=0.10.0
-numpy>=1.25
+# ============================================
+# Core Audio Analysis
+# ============================================
+essentia>=2.1b6           # 基本音声解析、Key/Danceability/Energy検出
+essentia-tensorflow>=2.1b6 # MusiCNNモデル（ジャンル分類）
+librosa>=0.10.0           # 拍解析、オンセット検出
+numpy>=1.25               # 数値計算
 
-# Beat/downbeat detection
-madmom>=0.16.1
+# ============================================
+# Deep Learning Framework
+# ============================================
+torch>=2.0.0              # PANNs/Demucs用（MPS加速対応）
+torchaudio>=2.0.0         # 音声処理
 
-# Audio source separation (for vocal/drum detection)
-demucs>=4.0.0
+# ============================================
+# Audio Source Separation
+# ============================================
+demucs>=4.0.0             # 音源分離（vocals/drums/bass/other）
 
-# Metadata handling
-mutagen>=1.47.0
+# ============================================
+# Audio Classification (PANNs)
+# ============================================
+# PANNsモデルは手動ダウンロードが必要:
+#   - ~/panns_data/Cnn14_mAP=0.431.pth
+#   - ~/panns_data/class_labels_indices.csv
+# ダウンロード元: https://zenodo.org/record/3987831
 
+# ============================================
+# Metadata Handling
+# ============================================
+mutagen>=1.47.0           # ID3タグ読み書き
+
+# ============================================
 # Utilities
-pyyaml>=6.0
-tqdm>=4.66.0
+# ============================================
+pyyaml>=6.0               # 設定ファイル
+tqdm>=4.66.0              # プログレスバー
 
-# Optional: for genre classification models
-# tensorflow>=2.15.0
-# scikit-learn>=1.3.0
+# ============================================
+# 非推奨/不使用
+# ============================================
+# madmom>=0.16.1          # 拍解析（librosaに変更、依存関係問題のため）
+# tensorflow>=2.15.0      # AVX問題のため不使用、essentiaのみで十分

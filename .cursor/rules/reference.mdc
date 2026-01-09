@@ -1,0 +1,53 @@
+---
+description: MIR-Tagger 機能リファレンス（タグ一覧・アナライザー仕様）
+globs:
+  - "src/analyzers/**/*.py"
+  - "doc/**/*.md"
+alwaysApply: true
+---
+
+# 機能リファレンス
+
+**詳細は `doc/機能リファレンス.md` を参照してください。**
+
+## クイックリファレンス
+
+### タグ形式
+
+`[TagName:Value]` 形式で、Comment欄に連結出力：
+
+```
+[Downbeat:1][Dance:High][Energy:VeryHigh][Genre:pop][Genre:anime][SpeechIntro:5s][MusicAt:5s][Key:Eb]
+```
+
+### アナライザー一覧
+
+| 名前 | 主な出力タグ |
+|------|-------------|
+| DanceabilityAnalyzer | `[Dance:High/Medium/Low]` |
+| EnergyAnalyzer | `[Energy:VeryHigh/High/Medium/Low]` |
+| KeyAnalyzer | `[Key:Am]` `[Key:Eb]` など |
+| GenreAnalyzer | `[Genre:pop]` `[Genre:anime]` など（複数可）+ `[Attr:vocal-female]` など |
+| MoodAnalyzer | `[Mood:happy/sad/relaxed/aggressive]` （複数可） |
+| BeatAnalyzer | `[Downbeat:1-4]` `[BPMChange:Yes]` |
+| IntroAnalyzer | `[SpeechIntro:Xs]` `[MusicAt:Xs]` `[Intro:Acapella/Singing/Drums/Inst/Full]` |
+
+### テスト用サンプル
+
+```bash
+# 星間飛行（セリフで始まる曲）
+python -m src.main "/Users/hanyanty/Music/Music/Media.localized/Music/ランカ・リー＝中島 愛/「マクロスF(フロンティア)」VOCAL COLLECTION 娘たま♀ (Disc1)/10 星間飛行.mp3" -w --backup
+```
+
+---
+
+## ⚠️ 更新ルール
+
+以下の場合は `doc/機能リファレンス.md` を更新してください：
+
+1. **新しいアナライザーを追加**したとき
+2. **新しいタグを追加**したとき
+3. **パラメータや閾値を変更**したとき
+4. **検出ロジックを変更**したとき
+
+更新後は `doc/機能リファレンス.md` の更新履歴テーブルにも追記すること。

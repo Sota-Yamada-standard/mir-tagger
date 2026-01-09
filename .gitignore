@@ -22,6 +22,7 @@ wheels/
 
 # Virtual environments
 venv/
+venv_x86_backup/
 ENV/
 env/
 .venv/

@@ -1,0 +1,72 @@
+---
+description: MIR-Tagger 設計パターン・実装ガイド
+globs:
+  - "src/**/*.py"
+alwaysApply: false
+---
+
+# 設計パターン・実装ガイド
+
+## モデルのシングルトンキャッシュ
+
+重いモデルは遅延ロード + クラス変数でキャッシュ：
+
+```python
+class MyAnalyzer(BaseAnalyzer):
+    _model = None  # クラス変数
+    
+    def _get_model(self):
+        if MyAnalyzer._model is None:
+            MyAnalyzer._model = load_model()
+        return MyAnalyzer._model
+```
+
+## PANNsによる音声分類
+
+PANNsのラベルを使用した検出ロジック：
+
+| 検出対象 | 条件 |
+|----------|------|
+| セリフ | `Speech` > 0.3 かつ `Music` < 0.5 |
+| アカペラ | `Singing` > 0.1 かつ `Music` < 0.5 かつ `Speech` < 0.3 |
+| 音楽開始 | `Music` > 0.5 |
+
+## rekordbox連携
+
+- ID3 COMMタグの `desc` は空文字（`desc=""`）にする
+- 「タグを再読み込み」で反映
+- BPMはrekordbox側に任せる（上書きしない）
+
+```python
+# tag_writer.py での書き込み
+audio.add(COMM(
+    encoding=3,  # UTF-8
+    lang='eng',
+    desc='',     # rekordboxが認識するよう空にする
+    text=new_comment
+))
+```
+
+## Demucs音源分離
+
+音源分離の出力は4トラック：
+- `vocals`: ボーカル
+- `drums`: ドラム
+- `bass`: ベース
+- `other`: その他（ギター、シンセ等）
+
+```python
+from demucs.pretrained import get_model
+from demucs.apply import apply_model
+
+model = get_model('htdemucs')
+sources = apply_model(model, waveform, device=device)
+# sources: [batch, 4, channels, samples]
+```
+
+## 環境注意事項
+
+- ARM64ネイティブ環境を使用（x86エミュレーションは非推奨）
+- venv/はARM64、venv_x86_backup/は旧環境（使用しない）
+- Demucs使用時は1曲10〜30秒
+- MPSが利用可能な場合は自動で使用

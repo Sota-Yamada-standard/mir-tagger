@@ -151,11 +151,12 @@ class TagWriter:
                 new_comment = tags
             
             # MIRタグ用のコメントを追加/更新
+            # rekordboxは desc="" のCOMMタグを読み取るため、空にする
             audio.delall("COMM")
             audio.add(COMM(
                 encoding=3,  # UTF-8
                 lang='eng',
-                desc=self.COMMENT_DESCRIPTION,
+                desc='',  # rekordbox互換のため空文字
                 text=new_comment
             ))
         

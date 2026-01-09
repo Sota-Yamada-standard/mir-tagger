@@ -1,0 +1,84 @@
+---
+description: MIR-Tagger プロジェクトの基本ルール・コーディング規約
+globs:
+  - "**/*.py"
+  - "**/*.md"
+alwaysApply: true
+---
+
+# MIR-Tagger プロジェクト概要
+
+MIR（Music Information Retrieval）技術を活用した音楽解析・自動タグ付けシステム。
+ローカルの音楽ファイルを解析し、DJ向けのタグを自動生成してrekordboxのComment欄に書き込む。
+
+## 技術スタック
+
+- **Python**: 3.10+ (ARM64ネイティブ環境)
+- **音声解析**: Essentia, librosa
+- **機械学習**: PyTorch (MPS加速), PANNs, MusiCNN
+- **音源分離**: Demucs (htdemucs)
+- **メタデータ**: Mutagen (ID3タグ)
+- **ターゲット**: rekordbox連携
+
+## ディレクトリ構造
+
+```
+mir-tagger/
+├── src/
+│   ├── core/           # 基盤クラス
+│   │   ├── audio_loader.py    # 音声読み込み
+│   │   └── base_analyzer.py   # アナライザー基底クラス + Registry
+│   ├── analyzers/      # プラグイン形式アナライザー（自動登録）
+│   ├── metadata/       # タグ書き込み
+│   ├── export/         # (予定) rekordbox XML出力
+│   └── main.py         # CLIエントリポイント
+├── doc/                # ドキュメント
+│   ├── 機能リファレンス.md      # 機能詳細（更新必須）
+│   └── 開発進捗・引き継ぎメモ.md
+├── tests/
+└── venv/               # ARM64ネイティブ仮想環境
+```
+
+## コーディング規約
+
+### アナライザーの追加方法
+
+新しいアナライザーは `src/analyzers/` に配置すると自動登録される：
+
+```python
+from src.core.base_analyzer import BaseAnalyzer, AnalyzerRegistry
+
+@AnalyzerRegistry.register
+class MyAnalyzer(BaseAnalyzer):
+    name = "my_analyzer"
+    description = "説明"
+    tag_prefix = "MyTag"
+    
+    def analyze(self, audio: np.ndarray, sample_rate: int) -> Dict[str, Any]:
+        # 解析ロジック
+        return {'value': 'result'}
+    
+    def to_tag(self, result: Dict[str, Any]) -> str:
+        return f"[{self.tag_prefix}:{result['value']}]"
+```
+
+### タグ形式
+
+- 形式: `[TagName:Value]`
+- 複数タグ連結: `[Dance:High][Energy:VeryHigh][Genre:pop]`
+- rekordboxのComment欄に書き込み（desc=""）
+
+### 型ヒント
+
+- 全ての関数に型ヒントを付ける
+- `Dict[str, Any]`, `List`, `Tuple`, `Optional` を適切に使用
+
+### ドキュメント更新
+
+- 機能追加時は `doc/機能リファレンス.md` を更新
+- 更新履歴テーブルに追記
+
+### 言語
+
+- コメント・ドキュメントは日本語
+- コード・変数名は英語
