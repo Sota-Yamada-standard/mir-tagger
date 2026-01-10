@@ -234,28 +234,51 @@ class AnisongCache:
         return results
     
     def search_by_title_and_artist(self, title: str, artist: str) -> List[Dict]:
-        """曲名とアーティスト名で検索"""
+        """
+        曲名とアーティスト名で検索
+        
+        アーティストが指定されている場合：
+        - アーティストがマッチしなければ結果を返さない（誤検出防止）
+        """
         title_norm = self.normalize_text(title)
         artist_norm = self.normalize_text(artist)
         
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             
-            # 1. タイトル+アーティスト完全一致
+            # タイトル部分一致で検索
             cursor = conn.execute("""
-                SELECT * FROM songs 
-                WHERE title_normalized LIKE ? AND artist_normalized LIKE ?
-            """, (f"%{title_norm}%", f"%{artist_norm}%"))
-            results = [dict(row) for row in cursor.fetchall()]
+                SELECT * FROM songs WHERE title_normalized LIKE ?
+            """, (f"%{title_norm}%",))
+            all_matches = [dict(row) for row in cursor.fetchall()]
             
-            # 2. タイトル一致（アーティストが見つからない場合）
-            if not results:
-                cursor = conn.execute("""
-                    SELECT * FROM songs WHERE title_normalized LIKE ?
-                """, (f"%{title_norm}%",))
-                results = [dict(row) for row in cursor.fetchall()]
-        
-        return results
+            if not all_matches:
+                return []
+            
+            # アーティストが指定されている場合はフィルタリング
+            if artist_norm:
+                # アーティスト名が部分一致するものを優先
+                artist_matches = [
+                    r for r in all_matches 
+                    if artist_norm in r.get('artist_normalized', '') or
+                       r.get('artist_normalized', '') in artist_norm
+                ]
+                
+                if artist_matches:
+                    return artist_matches
+                
+                # アーティストが一致しない場合でも、
+                # 曲名が非常にユニーク（長い・日本語含む）なら許容
+                if len(title_norm) >= 10 or any(ord(c) > 127 for c in title):
+                    # 複数マッチは信頼度低いのでフラグを立てる
+                    for r in all_matches:
+                        r['artist_mismatch'] = True
+                    return all_matches
+                
+                # 短いタイトルでアーティスト不一致は誤検出リスク高い
+                return []
+            
+            return all_matches
     
     def search_flexible(self, title: str, artist: str = None) -> List[Dict]:
         """柔軟な検索（タイトルの部分一致、括弧内のタイトルも検索）"""
@@ -338,7 +361,18 @@ class AnisongMatcher:
         if results:
             # 最も確実な結果を返す
             best = results[0]
-            confidence = 1.0 if len(results) == 1 else 0.9
+            
+            # 信頼度計算
+            confidence = 1.0
+            
+            # 複数マッチは信頼度を下げる
+            if len(results) > 1:
+                confidence *= 0.9
+            
+            # アーティスト不一致フラグがある場合は信頼度を下げる
+            if best.get('artist_mismatch'):
+                confidence *= 0.7  # 0.7を掛けて0.63-0.7程度に
+            
             return True, {
                 'anime_title': best['anime_title'],
                 'anime_id': best['anime_id'],
@@ -346,7 +380,8 @@ class AnisongMatcher:
                 'song_title': best['title'],
                 'artist': best.get('artist', ''),
                 'confidence': confidence,
-                'match_count': len(results)
+                'match_count': len(results),
+                'artist_mismatch': best.get('artist_mismatch', False)
             }
         
         return False, None

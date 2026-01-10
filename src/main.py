@@ -179,12 +179,20 @@ def analyze_file(
     for name, analyzer_class in analyzers.items():
         analyzer = analyzer_class()
         
-        # AnisongAnalyzerにはメタデータを設定
-        if name == 'anisong' and hasattr(analyzer, 'set_metadata'):
-            analyzer.set_metadata(
-                title=file_metadata.get('title'),
-                artist=file_metadata.get('artist')
-            )
+        # メタデータを必要とするアナライザーに設定
+        if hasattr(analyzer, 'set_metadata'):
+            if name == 'anisong':
+                analyzer.set_metadata(
+                    title=file_metadata.get('title'),
+                    artist=file_metadata.get('artist')
+                )
+            elif name == 'era':
+                analyzer.set_metadata(
+                    title=file_metadata.get('title'),
+                    artist=file_metadata.get('artist'),
+                    album=file_metadata.get('album'),
+                    file_path=file_path
+                )
         
         try:
             result = analyzer.analyze(audio, sr)

@@ -29,6 +29,7 @@ alwaysApply: true
 | KeyAnalyzer | `[Key:Am]` `[Key:Eb]` など |
 | GenreAnalyzer | `[Genre:pop]` など（複数可）+ `[Attr:vocal-female]` など |
 | **AnisongAnalyzer** | `[Genre:anime]` `[Anime:作品名]` `[AnimeTheme:OP/ED/Insert]` （MAL DB照合） |
+| **EraAnalyzer** | `[Era:1980s/1990s/2000s/2010s/2020s]` `[Year:XXXX]` （メタデータから） |
 | MoodAnalyzer | `[Mood:happy/sad/relaxed/aggressive]` （複数可） |
 | BeatAnalyzer | `[Downbeat:1-4]` `[Meter:Irregular]` `[BPMChange:Yes]` |
 | IntroAnalyzer | `[SpeechIntro:Xs]` `[MusicAt:Xs]` `[Intro:Acapella/Singing/Vocal/Drums/Inst/Full]` `[BeatAt:Xs]` |
