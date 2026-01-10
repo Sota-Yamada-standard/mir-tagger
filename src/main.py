@@ -19,6 +19,117 @@ from src.metadata.tag_writer import TagWriter
 import src.analyzers
 
 
+def get_file_metadata(file_path: str) -> Dict[str, str]:
+    """
+    音楽ファイルからメタデータを取得
+    
+    Returns:
+        {'title': str, 'artist': str, 'album': str}
+    """
+    from mutagen import File
+    from mutagen.id3 import ID3
+    from mutagen.mp4 import MP4
+    
+    metadata = {'title': None, 'artist': None, 'album': None}
+    path = Path(file_path)
+    
+    def decode_tag_value(tag_frame):
+        """ID3タグのテキストを適切にデコード"""
+        if hasattr(tag_frame, 'text'):
+            # 複数のテキスト値がある場合
+            texts = tag_frame.text if isinstance(tag_frame.text, list) else [tag_frame.text]
+            for text in texts:
+                if text:
+                    # 既にUnicodeならそのまま返す
+                    if isinstance(text, str):
+                        return text
+                    # バイト列ならデコードを試みる
+                    if isinstance(text, bytes):
+                        for enc in ['utf-8', 'shift_jis', 'cp932', 'euc-jp', 'latin-1']:
+                            try:
+                                return text.decode(enc)
+                            except (UnicodeDecodeError, AttributeError):
+                                continue
+        return str(tag_frame) if tag_frame else None
+    
+    try:
+        audio = File(file_path)
+        if audio is None:
+            # ファイル名から情報を抽出
+            metadata['title'] = path.stem
+            return metadata
+        
+        # MP3 (ID3)
+        if hasattr(audio, 'tags') and audio.tags:
+            tags = audio.tags
+            
+            # ID3 tags (MP3)
+            if hasattr(tags, 'getall'):
+                # Title
+                for tag in ['TIT2', 'TIT1']:
+                    if tag in tags:
+                        metadata['title'] = decode_tag_value(tags[tag])
+                        break
+                # Artist
+                for tag in ['TPE1', 'TPE2']:
+                    if tag in tags:
+                        metadata['artist'] = decode_tag_value(tags[tag])
+                        break
+                # Album
+                if 'TALB' in tags:
+                    metadata['album'] = decode_tag_value(tags['TALB'])
+            
+            # MP4/M4A tags
+            elif isinstance(tags, dict):
+                if '\xa9nam' in tags:
+                    val = tags['\xa9nam']
+                    metadata['title'] = val[0] if isinstance(val, list) else str(val)
+                if '\xa9ART' in tags:
+                    val = tags['\xa9ART']
+                    metadata['artist'] = val[0] if isinstance(val, list) else str(val)
+                if '\xa9alb' in tags:
+                    val = tags['\xa9alb']
+                    metadata['album'] = val[0] if isinstance(val, list) else str(val)
+        
+        # ファイル名から曲名を推測（ID3タグが文字化けしている場合の対策）
+        stem = path.stem
+        import re
+        title_match = re.match(r'^\d+[\s._-]*(.+)$', stem)
+        filename_title = title_match.group(1) if title_match else stem
+        
+        # タイトルが文字化けしているか判定（非ASCII文字が少なすぎる、または制御文字が含まれる）
+        def is_garbled(text):
+            if not text:
+                return True
+            # 制御文字が含まれている
+            if any(ord(c) < 32 and c not in '\n\r\t' for c in text):
+                return True
+            # ASCII+日本語以外の奇妙な文字が含まれている
+            import unicodedata
+            for c in text:
+                cat = unicodedata.category(c)
+                if cat.startswith('C') and c not in '\n\r\t':  # 制御文字
+                    return True
+            return False
+        
+        # タグが文字化けしていたらファイル名を優先
+        if is_garbled(metadata['title']):
+            metadata['title'] = filename_title
+        
+        # それでもダメならファイル名を使用
+        if not metadata['title']:
+            metadata['title'] = filename_title
+        
+    except Exception as e:
+        # エラー時はファイル名をタイトルとして使用
+        import re
+        stem = path.stem
+        title_match = re.match(r'^\d+[\s._-]*(.+)$', stem)
+        metadata['title'] = title_match.group(1) if title_match else stem
+    
+    return metadata
+
+
 def analyze_file(
     file_path: str,
     analyzer_names: Optional[List[str]] = None,
@@ -39,6 +150,9 @@ def analyze_file(
     if not Config.is_supported_format(file_path):
         raise ValueError(f"Unsupported file format: {file_path}")
     
+    # メタデータ取得（AnisongAnalyzer用）
+    file_metadata = get_file_metadata(file_path)
+    
     # 音声読み込み
     loader = AudioLoader()
     audio, sr = loader.load(file_path)
@@ -56,6 +170,7 @@ def analyze_file(
     results = {
         'file': str(Path(file_path).name),
         'duration_sec': round(duration, 2),
+        'metadata': file_metadata,
         'analysis': {}
     }
     
@@ -63,6 +178,14 @@ def analyze_file(
     
     for name, analyzer_class in analyzers.items():
         analyzer = analyzer_class()
+        
+        # AnisongAnalyzerにはメタデータを設定
+        if name == 'anisong' and hasattr(analyzer, 'set_metadata'):
+            analyzer.set_metadata(
+                title=file_metadata.get('title'),
+                artist=file_metadata.get('artist')
+            )
+        
         try:
             result = analyzer.analyze(audio, sr)
             results['analysis'][name] = result

@@ -27,10 +27,17 @@ alwaysApply: true
 | DanceabilityAnalyzer | `[Dance:High/Medium/Low]` |
 | EnergyAnalyzer | `[Energy:VeryHigh/High/Medium/Low]` |
 | KeyAnalyzer | `[Key:Am]` `[Key:Eb]` など |
-| GenreAnalyzer | `[Genre:pop]` `[Genre:anime]` など（複数可）+ `[Attr:vocal-female]` など |
+| GenreAnalyzer | `[Genre:pop]` など（複数可）+ `[Attr:vocal-female]` など |
+| **AnisongAnalyzer** | `[Genre:anime]` `[Anime:作品名]` `[AnimeTheme:OP/ED/Insert]` （MAL DB照合） |
 | MoodAnalyzer | `[Mood:happy/sad/relaxed/aggressive]` （複数可） |
 | BeatAnalyzer | `[Downbeat:1-4]` `[Meter:Irregular]` `[BPMChange:Yes]` |
 | IntroAnalyzer | `[SpeechIntro:Xs]` `[MusicAt:Xs]` `[Intro:Acapella/Singing/Vocal/Drums/Inst/Full]` `[BeatAt:Xs]` |
+
+### アニソン判定について
+
+- `[Genre:anime]`はMyAnimeList DB照合で判定（高精度）
+- GenreAnalyzerのルールベース判定は廃止
+- キャッシュ構築が必要: `build_popular_anime_cache()`
 
 ### テスト用サンプル
 

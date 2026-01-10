@@ -111,15 +111,10 @@ class GenreAnalyzer(BaseAnalyzer):
     
     # Essentiaルールベースの追加ジャンル
     # boost値は重み(0.2)を掛けた後の値が閾値を超えるように設定
+    # 
+    # 注意: "anime"はAnisongAnalyzer（MAL DB照合）を使用してください
+    # 音声特徴量だけでは正確なアニソン判定は困難です
     ESSENTIA_RULES = {
-        "anime": {
-            "conditions": {
-                "bpm": (120, 170),
-                "spectral_centroid": (1800, 4500),
-                "beats_confidence_min": 2.0,
-            },
-            "boost": 0.9,  # 0.9 * 0.2 = 0.18 > 0.15
-        },
         "j-pop": {
             "conditions": {
                 "bpm": (100, 160),
