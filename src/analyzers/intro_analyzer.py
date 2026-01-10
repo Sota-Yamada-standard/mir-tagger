@@ -141,8 +141,21 @@ class IntroAnalyzer(BaseAnalyzer):
             # ソース情報でイントロタイプを補完
             if source_result.get('drum_intro'):
                 result['drum_intro'] = True
+            
+            # vocal_intro判定：DemucsとPANNsの両方で人の声を検出した場合のみ
             if source_result.get('vocal_intro'):
-                result['vocal_intro'] = True
+                # PANNsでも人の声（Speech/Singing）が検出されているか確認
+                timeline = result.get('timeline', [])
+                if timeline:
+                    first_chunks = timeline[:5]  # 最初の5秒
+                    avg_speech = sum(c.get('speech', 0) for c in first_chunks) / len(first_chunks)
+                    avg_singing = sum(c.get('singing', 0) for c in first_chunks) / len(first_chunks)
+                    # PANNsでSpeechまたはSingingが0.05以上なら人の声あり
+                    panns_voice_detected = avg_speech > 0.05 or avg_singing > 0.05
+                    result['vocal_intro'] = panns_voice_detected
+                else:
+                    # PANNsのデータがない場合はDemucsの結果を信頼
+                    result['vocal_intro'] = True
             
             # ビートドロップ検出（静かに始まって後からビートが入るパターン）
             beat_drop_result = self._detect_beat_drop(audio, sample_rate)
