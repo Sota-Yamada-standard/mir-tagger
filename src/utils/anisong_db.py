@@ -336,9 +336,18 @@ class AnisongCache:
 class AnisongMatcher:
     """アニソン照合エンジン"""
     
-    def __init__(self, cache_dir: Path = None):
+    # オンデマンド検索のデフォルト設定
+    DEFAULT_ONLINE_SEARCH = True
+    
+    def __init__(self, cache_dir: Path = None, online_search: bool = None):
+        """
+        Args:
+            cache_dir: キャッシュDBのディレクトリ
+            online_search: オンデマンドでMAL APIを検索するか（デフォルト: True）
+        """
         self.cache = AnisongCache(cache_dir)
         self.client = JikanClient()
+        self.online_search = online_search if online_search is not None else self.DEFAULT_ONLINE_SEARCH
     
     def is_anime_song(self, title: str, artist: str = None) -> Tuple[bool, Optional[Dict]]:
         """
@@ -352,39 +361,190 @@ class AnisongMatcher:
             (is_anime_song, match_info)
             match_info: {'anime_title': str, 'anime_id': int, 'theme_type': str, 'confidence': float}
         """
-        # キャッシュから検索
+        # 1. キャッシュから検索
         if artist:
             results = self.cache.search_by_title_and_artist(title, artist)
         else:
             results = self.cache.search_by_title(title)
         
         if results:
-            # 最も確実な結果を返す
-            best = results[0]
-            
-            # 信頼度計算
-            confidence = 1.0
-            
-            # 複数マッチは信頼度を下げる
-            if len(results) > 1:
-                confidence *= 0.9
-            
-            # アーティスト不一致フラグがある場合は信頼度を下げる
-            if best.get('artist_mismatch'):
-                confidence *= 0.7  # 0.7を掛けて0.63-0.7程度に
-            
-            return True, {
-                'anime_title': best['anime_title'],
-                'anime_id': best['anime_id'],
-                'theme_type': best.get('theme_type', 'unknown'),
-                'song_title': best['title'],
-                'artist': best.get('artist', ''),
-                'confidence': confidence,
-                'match_count': len(results),
-                'artist_mismatch': best.get('artist_mismatch', False)
-            }
+            return self._build_result(results, source='cache')
+        
+        # 2. オンデマンド検索（キャッシュにない場合）
+        if self.online_search:
+            online_result = self._search_online(title, artist)
+            if online_result:
+                return True, online_result
         
         return False, None
+    
+    def _build_result(self, results: List[Dict], source: str = 'cache') -> Tuple[bool, Dict]:
+        """検索結果からレスポンスを構築"""
+        best = results[0]
+        
+        # 信頼度計算
+        confidence = 1.0
+        
+        # 複数マッチは信頼度を下げる
+        if len(results) > 1:
+            confidence *= 0.9
+        
+        # アーティスト不一致フラグがある場合は信頼度を下げる
+        if best.get('artist_mismatch'):
+            confidence *= 0.7
+        
+        # オンライン検索の場合は少し信頼度を下げる
+        if source == 'online':
+            confidence *= 0.95
+        
+        return True, {
+            'anime_title': best['anime_title'],
+            'anime_id': best['anime_id'],
+            'theme_type': best.get('theme_type', 'unknown'),
+            'song_title': best['title'],
+            'artist': best.get('artist', ''),
+            'confidence': confidence,
+            'match_count': len(results),
+            'artist_mismatch': best.get('artist_mismatch', False),
+            'source': source
+        }
+    
+    def _search_online(self, title: str, artist: str = None) -> Optional[Dict]:
+        """
+        MAL APIでオンデマンド検索
+        
+        検索戦略:
+        1. 曲名でアニメを検索し、主題歌をチェック
+        2. アーティスト名でアニメを検索し、主題歌をチェック
+        3. 曲名の一部（括弧除去）で再検索
+        
+        ヒットしたらキャッシュに保存して返す
+        """
+        title_norm = self.cache.normalize_text(title)
+        artist_norm = self.cache.normalize_text(artist) if artist else None
+        
+        # 検索クエリのバリエーション
+        search_queries = [title]
+        
+        # アーティスト名でも検索
+        if artist:
+            search_queries.append(artist)
+        
+        # 括弧を除去したタイトル
+        import re
+        clean_title = re.sub(r'[（(][^）)]*[）)]', '', title).strip()
+        if clean_title != title:
+            search_queries.append(clean_title)
+        
+        for search_query in search_queries:
+            result = self._search_anime_themes(search_query, title_norm, artist_norm)
+            if result:
+                return result
+        
+        return None
+    
+    def _search_anime_themes(self, search_query: str, title_norm: str, 
+                             artist_norm: str = None) -> Optional[Dict]:
+        """指定クエリでアニメを検索し、主題歌をチェック"""
+        try:
+            anime_results = self.client.search_anime(search_query, limit=10)
+            
+            if not anime_results:
+                return None
+            
+            for anime in anime_results:
+                mal_id = anime.get('mal_id')
+                anime_title = anime.get('title', '')
+                
+                # 主題歌情報を取得
+                themes = self.client.get_anime_themes(mal_id)
+                if not themes:
+                    continue
+                
+                # OP/EDをチェック
+                for theme_type, theme_list in [('opening', themes.get('openings', [])), 
+                                                ('ending', themes.get('endings', []))]:
+                    for theme_str in theme_list:
+                        song_info = self._parse_theme_string(theme_str)
+                        if not song_info:
+                            continue
+                        
+                        song_title_norm = self.cache.normalize_text(song_info['title'])
+                        song_artist_norm = self.cache.normalize_text(song_info.get('artist', ''))
+                        
+                        # タイトルマッチ（部分一致または完全一致）
+                        title_match = (
+                            title_norm in song_title_norm or 
+                            song_title_norm in title_norm or
+                            self._fuzzy_match(title_norm, song_title_norm)
+                        )
+                        
+                        if not title_match:
+                            continue
+                        
+                        # アーティストチェック（指定されている場合）
+                        artist_match = True
+                        if artist_norm and song_artist_norm:
+                            artist_match = (
+                                artist_norm in song_artist_norm or 
+                                song_artist_norm in artist_norm
+                            )
+                        
+                        # キャッシュに保存
+                        self.cache.add_song(
+                            title=song_info['title'],
+                            artist=song_info.get('artist', ''),
+                            anime_id=mal_id,
+                            anime_title=anime_title,
+                            theme_type=theme_type
+                        )
+                        
+                        # アニメ情報も保存
+                        self.cache.add_anime(
+                            mal_id=mal_id,
+                            title=anime_title,
+                            title_english=anime.get('title_english'),
+                            title_japanese=anime.get('title_japanese'),
+                            year=anime.get('year')
+                        )
+                        
+                        return {
+                            'anime_title': anime_title,
+                            'anime_id': mal_id,
+                            'theme_type': theme_type,
+                            'song_title': song_info['title'],
+                            'artist': song_info.get('artist', ''),
+                            'confidence': 0.9 if artist_match else 0.7,
+                            'match_count': 1,
+                            'artist_mismatch': not artist_match,
+                            'source': 'online'
+                        }
+            
+            return None
+            
+        except Exception as e:
+            return None
+    
+    def _fuzzy_match(self, str1: str, str2: str, threshold: float = 0.7) -> bool:
+        """簡易ファジーマッチ（共通文字の割合）"""
+        if not str1 or not str2:
+            return False
+        
+        # 短い方の文字が長い方に何割含まれているか
+        shorter = str1 if len(str1) <= len(str2) else str2
+        longer = str2 if len(str1) <= len(str2) else str1
+        
+        if len(shorter) < 3:
+            return shorter == longer
+        
+        # 連続する3文字の一致数をカウント
+        matches = 0
+        for i in range(len(shorter) - 2):
+            if shorter[i:i+3] in longer:
+                matches += 1
+        
+        ratio = matches / (len(shorter) - 2) if len(shorter) > 2 else 0
+        return ratio >= threshold
     
     def build_cache_from_mal(self, max_anime: int = None, progress_callback=None):
         """
