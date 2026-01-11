@@ -147,10 +147,16 @@ class BeatAnalyzer(BaseAnalyzer):
             'value': downbeat
         }
     
+    # ビート解析でスピーチをスキップするための最低継続時間
+    SPEECH_MIN_DURATION_FOR_SKIP = 2.0  # 2秒以上続くスピーチのみスキップ
+    
     def _detect_music_start(self, audio: np.ndarray, sample_rate: int) -> float:
         """
         PANNsを使って音楽開始位置を検出
         セリフ/スピーチ部分をスキップ
+        
+        注意: 短いスピーチ（2秒未満）はノイズ/効果音の可能性があるため
+        ビート解析のスキップ対象としない（Downbeat誤検出防止）
         """
         model = self._get_panns_model()
         if model is None:
@@ -193,8 +199,10 @@ class BeatAnalyzer(BaseAnalyzer):
         if first_speech < self.SPEECH_THRESHOLD:
             return 0.0
         
-        # 音楽が始まる位置を探す
+        # スピーチが何秒続くか確認（継続性チェック）
         num_chunks = int(len(audio_resampled) / chunk_samples)
+        speech_duration = 0.0
+        music_start_time = 0.0
         
         for i in range(num_chunks):
             start = i * chunk_samples
@@ -205,12 +213,22 @@ class BeatAnalyzer(BaseAnalyzer):
                 continue
             
             clipwise, _ = model.inference(chunk[None, :])
+            speech_score = clipwise[0][speech_idx]
             music_score = clipwise[0][music_idx]
             
-            if music_score > self.MUSIC_THRESHOLD:
-                return float(i * chunk_duration)
+            # スピーチが続いている間はカウント
+            if speech_score > self.SPEECH_THRESHOLD and music_score < self.MUSIC_THRESHOLD:
+                speech_duration = float((i + 1) * chunk_duration)
+            elif music_score > self.MUSIC_THRESHOLD:
+                music_start_time = float(i * chunk_duration)
+                break
         
-        return 0.0
+        # 短いスピーチ（2秒未満）はノイズ/効果音の可能性があるためスキップしない
+        # これにより Downbeat の誤検出を防ぐ
+        if speech_duration < self.SPEECH_MIN_DURATION_FOR_SKIP:
+            return 0.0
+        
+        return music_start_time
     
     def _estimate_downbeat(
         self, 
