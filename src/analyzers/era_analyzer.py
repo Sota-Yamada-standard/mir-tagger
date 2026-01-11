@@ -40,12 +40,12 @@ class EraAnalyzer(BaseAnalyzer):
     tag_prefix = "Era"
     
     # MusicBrainz検索を有効にするか
-    USE_MUSICBRAINZ = False  # デフォルトはOFF（ネットワーク依存を避ける）
+    USE_MUSICBRAINZ = True  # デフォルトON（メタデータがない場合に検索）
     
     # 正確な年もタグに含めるか
     INCLUDE_EXACT_YEAR = True
     
-    def __init__(self, use_musicbrainz: bool = False, include_exact_year: bool = True):
+    def __init__(self, use_musicbrainz: bool = True, include_exact_year: bool = True):
         """
         Args:
             use_musicbrainz: MusicBrainz検索を有効にするか
