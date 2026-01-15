@@ -150,6 +150,11 @@ def format_time(seconds: float) -> str:
         return f"{seconds/3600:.1f}時間"
 
 
+def process_file_wrapper(task_args):
+    """imap用ラッパー（グローバルスコープ必須）"""
+    return process_file(*task_args)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='MIR - Batch audio analysis and tagging',
@@ -279,28 +284,27 @@ def main():
         # maxtasksperchildで定期的にワーカーを再起動しメモリリークを防止
         chunk_size = 5  # 5曲ごとにワーカー再起動
         
+        # imap用にタスク引数をタプルにまとめる
+        tasks = [
+            (str(f), args.write, args.backup, args.field, args.skip_tagged)
+            for f in files
+        ]
+        
         with mp.get_context('spawn').Pool(
             processes=args.jobs,
             maxtasksperchild=chunk_size  # 各ワーカーは5曲処理後に再起動
         ) as pool:
-            # 非同期でタスクを投入
-            tasks = [
-                (str(f), args.write, args.backup, args.field, args.skip_tagged)
-                for f in files
-            ]
-            
-            # imap_unorderedで進捗表示しながら処理
-            for i, result in enumerate(pool.starmap(process_file, tasks), 1):
+            for i, result in enumerate(pool.imap_unordered(process_file_wrapper, tasks), 1):
                 if result['status'] == 'success':
                     print(f"[{i}/{len(files)}] ✅ {result['file']}")
-                    print(f"         {result['tags']}")
+                    print(f"         {result['tags']}", flush=True)
                     success_count += 1
                 elif result['status'] == 'skipped':
-                    print(f"[{i}/{len(files)}] ⏭️  {result['file']} (skipped)")
+                    print(f"[{i}/{len(files)}] ⏭️  {result['file']} (skipped)", flush=True)
                     skipped_count += 1
                 else:
                     print(f"[{i}/{len(files)}] ❌ {result['file']}")
-                    print(f"         Error: {result['error']}")
+                    print(f"         Error: {result['error']}", flush=True)
                     error_count += 1
     
     # サマリー
