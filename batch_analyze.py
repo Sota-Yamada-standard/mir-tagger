@@ -21,7 +21,7 @@ import argparse
 import time
 from pathlib import Path
 from typing import List, Optional
-from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing as mp
 
 # プロジェクトルートをパスに追加
 sys.path.insert(0, str(Path(__file__).parent))
@@ -65,6 +65,9 @@ def is_already_tagged(file_path: str) -> bool:
 def process_file(file_path: str, write_tags: bool, backup: bool, field: str,
                  skip_tagged: bool = False) -> dict:
     """単一ファイルを処理"""
+    import gc
+    import torch
+    
     try:
         # スキップチェック
         if skip_tagged and is_already_tagged(file_path):
@@ -85,12 +88,21 @@ def process_file(file_path: str, write_tags: bool, backup: bool, field: str,
                 append=False
             )
         
-        return {
+        result = {
             'file': Path(file_path).name,
             'status': 'success',
             'tags': results['tags']
         }
+        
+        # メモリ解放（重要）
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+        gc.collect()
+        
+        return result
     except Exception as e:
+        # エラー時もメモリ解放
+        gc.collect()
         return {
             'file': Path(file_path).name,
             'status': 'error',
@@ -263,18 +275,22 @@ def main():
                 print(f"         Error: {result['error']}")
                 error_count += 1
     else:
-        # マルチプロセス
-        with ProcessPoolExecutor(max_workers=args.jobs) as executor:
-            futures = {
-                executor.submit(
-                    process_file, str(f), args.write, args.backup, 
-                    args.field, args.skip_tagged
-                ): f for f in files
-            }
+        # マルチプロセス（メモリ対策: 各ワーカーは5曲処理ごとに再起動）
+        # maxtasksperchildで定期的にワーカーを再起動しメモリリークを防止
+        chunk_size = 5  # 5曲ごとにワーカー再起動
+        
+        with mp.get_context('spawn').Pool(
+            processes=args.jobs,
+            maxtasksperchild=chunk_size  # 各ワーカーは5曲処理後に再起動
+        ) as pool:
+            # 非同期でタスクを投入
+            tasks = [
+                (str(f), args.write, args.backup, args.field, args.skip_tagged)
+                for f in files
+            ]
             
-            for i, future in enumerate(as_completed(futures), 1):
-                result = future.result()
-                
+            # imap_unorderedで進捗表示しながら処理
+            for i, result in enumerate(pool.starmap(process_file, tasks), 1):
                 if result['status'] == 'success':
                     print(f"[{i}/{len(files)}] ✅ {result['file']}")
                     print(f"         {result['tags']}")

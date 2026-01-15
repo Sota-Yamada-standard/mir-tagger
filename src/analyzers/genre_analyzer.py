@@ -75,12 +75,16 @@ class GenreAnalyzer(BaseAnalyzer):
         "Progressive rock": "progressive-rock",
         "House": "house",
         "Mellow": "mellow",
-        "00s": "2000s",
-        "90s": "1990s",
-        "80s": "1980s",
-        "70s": "1970s",
-        "60s": "1960s",
+        # 年代タグはEraAnalyzerで処理するためスキップ
+        # "00s": "2000s",
+        # "90s": "1990s",
+        # "80s": "1980s",
+        # "70s": "1970s",
+        # "60s": "1960s",
     }
+    
+    # 年代タグ（ジャンルから除外）
+    ERA_TAGS = {"00s", "90s", "80s", "70s", "60s", "2000s", "1990s", "1980s", "1970s", "1960s"}
     
     # PANNsラベルマッピング（主要なもの）
     # 属性（_で始まる）はジャンルではなく楽器/特徴として扱う
@@ -302,6 +306,9 @@ class GenreAnalyzer(BaseAnalyzer):
                 # ムード/特徴タグ
                 if score > 0.1:
                     attributes.append(normalized)
+            elif label in self.ERA_TAGS or normalized in self.ERA_TAGS:
+                # 年代タグはEraAnalyzerで処理するためスキップ
+                pass
             else:
                 # ジャンルタグ
                 genres[normalized] = float(score)
