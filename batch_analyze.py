@@ -62,21 +62,12 @@ def is_already_tagged(file_path: str) -> bool:
         return False
 
 
-def process_file(file_path: str, write_tags: bool, backup: bool, field: str,
-                 skip_tagged: bool = False) -> dict:
-    """単一ファイルを処理"""
+def process_file(file_path: str, write_tags: bool, backup: bool, field: str) -> dict:
+    """単一ファイルを処理（スキップ判定は事前に完了済み）"""
     import gc
     import torch
     
     try:
-        # スキップチェック
-        if skip_tagged and is_already_tagged(file_path):
-            return {
-                'file': Path(file_path).name,
-                'status': 'skipped',
-                'reason': 'already tagged'
-            }
-        
         results = analyze_file(file_path)
         
         if write_tags:
@@ -94,10 +85,10 @@ def process_file(file_path: str, write_tags: bool, backup: bool, field: str,
             'tags': results['tags']
         }
         
-        # メモリ解放（重要）
+        # メモリ解放
+        gc.collect()
         if torch.backends.mps.is_available():
             torch.mps.empty_cache()
-        gc.collect()
         
         return result
     except Exception as e:
@@ -108,6 +99,10 @@ def process_file(file_path: str, write_tags: bool, backup: bool, field: str,
             'status': 'error',
             'error': str(e)
         }
+
+
+# モデルキャッシュクリア間隔（曲数）
+MODEL_CACHE_CLEAR_INTERVAL = 10
 
 
 def find_audio_files(directory: str, recursive: bool = True) -> List[Path]:
@@ -198,8 +193,10 @@ def main():
     # 実行オプション
     parser.add_argument('--no-recursive', action='store_true',
                         help='Do not search subdirectories')
-    parser.add_argument('-j', '--jobs', type=int, default=1,
-                        help='Number of parallel jobs (default: 1)')
+    parser.add_argument('-j', '--jobs', type=int, default=2,
+                        help='Number of parallel jobs (default: 2, max recommended: 2)')
+    parser.add_argument('--limit', type=int, default=None,
+                        help='Limit number of files to process (for testing)')
     parser.add_argument('--dry-run', action='store_true',
                         help='Show files to process without processing')
     
@@ -236,7 +233,47 @@ def main():
         print("❌ No files to process")
         return
     
-    # 所要時間見積もり
+    # 事前にスキップ対象を除外（ワーカーでのモデルロードを回避）
+    if args.skip_tagged:
+        print(f"\n🔍 Checking for already tagged files...")
+        original_count = len(files)
+        files_to_process = []
+        skipped_files = []
+        
+        for f in files:
+            if is_already_tagged(str(f)):
+                skipped_files.append(f)
+            else:
+                files_to_process.append(f)
+        
+        skipped_count = len(skipped_files)
+        files = files_to_process
+        print(f"   Already tagged: {skipped_count} files (skipped)")
+        print(f"   To process: {len(files)} files")
+        
+        if not files:
+            print("\n✅ All files already processed!")
+            return
+    else:
+        skipped_count = 0
+    
+    # タグ書き込み可能なフォーマットのみ（wavは読み込めるがタグ書き込み不可）
+    supported_files = [f for f in files if str(f).lower().endswith(('.mp3', '.m4a', '.mp4', '.flac', '.aiff'))]
+    unsupported_count = len(files) - len(supported_files)
+    if unsupported_count > 0:
+        print(f"   Unsupported format: {unsupported_count} files (skipped)")
+    files = supported_files
+    
+    if not files:
+        print("❌ No supported files to process")
+        return
+    
+    # --limit オプションでファイル数を制限（テスト用）
+    if args.limit and len(files) > args.limit:
+        print(f"\n🔬 Testing mode: limiting to {args.limit} files")
+        files = files[:args.limit]
+    
+    # 所要時間見積もり（スキップ除外後）
     estimated_time = len(files) * 11.5 / max(args.jobs, 1)  # MPS想定
     print(f"⏱️  Estimated time: {format_time(estimated_time)} ({args.jobs} jobs)")
     
@@ -249,13 +286,12 @@ def main():
         return
     
     # 処理実行
-    print(f"\n🔄 Processing... (jobs: {args.jobs})")
+    print(f"\n🔄 Processing {len(files)} files... (jobs: {args.jobs})")
     print("-" * 60)
     
     start_time = time.time()
     success_count = 0
     error_count = 0
-    skipped_count = 0
     
     if args.jobs == 1:
         # シングルプロセス
@@ -264,44 +300,45 @@ def main():
                 str(file_path), 
                 args.write, 
                 args.backup, 
-                args.field,
-                args.skip_tagged
+                args.field
             )
             
             if result['status'] == 'success':
                 print(f"[{i}/{len(files)}] ✅ {result['file']}")
                 print(f"         {result['tags']}")
                 success_count += 1
-            elif result['status'] == 'skipped':
-                print(f"[{i}/{len(files)}] ⏭️  {result['file']} (skipped)")
-                skipped_count += 1
             else:
                 print(f"[{i}/{len(files)}] ❌ {result['file']}")
                 print(f"         Error: {result['error']}")
                 error_count += 1
+            
+            # N曲ごとにモデルキャッシュをクリア（メモリリーク対策）
+            if i % MODEL_CACHE_CLEAR_INTERVAL == 0:
+                from src.utils.memory import clear_all_model_caches, get_memory_usage_mb
+                mem_before = get_memory_usage_mb()
+                clear_all_model_caches()
+                mem_after = get_memory_usage_mb()
+                print(f"         📉 Cache cleared: {mem_before:.0f}MB → {mem_after:.0f}MB")
     else:
-        # マルチプロセス（メモリ対策: 各ワーカーは5曲処理ごとに再起動）
-        # maxtasksperchildで定期的にワーカーを再起動しメモリリークを防止
-        chunk_size = 5  # 5曲ごとにワーカー再起動
+        # マルチプロセス（メモリ対策: N曲ごとにワーカー再起動）
+        # maxtasksperchildでワーカーを定期的に再起動しメモリリークを防止
+        chunk_size = MODEL_CACHE_CLEAR_INTERVAL  # シングルと同じ間隔で再起動
         
-        # imap用にタスク引数をタプルにまとめる
+        # imap用にタスク引数をタプルにまとめる（skip_taggedは事前処理済み）
         tasks = [
-            (str(f), args.write, args.backup, args.field, args.skip_tagged)
+            (str(f), args.write, args.backup, args.field)
             for f in files
         ]
         
         with mp.get_context('spawn').Pool(
             processes=args.jobs,
-            maxtasksperchild=chunk_size  # 各ワーカーは5曲処理後に再起動
+            maxtasksperchild=chunk_size  # N曲処理後にワーカー再起動
         ) as pool:
             for i, result in enumerate(pool.imap_unordered(process_file_wrapper, tasks), 1):
                 if result['status'] == 'success':
                     print(f"[{i}/{len(files)}] ✅ {result['file']}")
                     print(f"         {result['tags']}", flush=True)
                     success_count += 1
-                elif result['status'] == 'skipped':
-                    print(f"[{i}/{len(files)}] ⏭️  {result['file']} (skipped)", flush=True)
-                    skipped_count += 1
                 else:
                     print(f"[{i}/{len(files)}] ❌ {result['file']}")
                     print(f"         Error: {result['error']}", flush=True)

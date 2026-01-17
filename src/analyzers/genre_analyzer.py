@@ -147,6 +147,18 @@ class GenreAnalyzer(BaseAnalyzer):
     _panns_model = None
     _musicnn_model = None
 
+    @classmethod
+    def clear_model_cache(cls):
+        """モデルキャッシュをクリアしてメモリを解放"""
+        import gc
+        if cls._panns_model is not None:
+            del cls._panns_model
+            cls._panns_model = None
+        if cls._musicnn_model is not None:
+            del cls._musicnn_model
+            cls._musicnn_model = None
+        gc.collect()
+
     def __init__(
         self,
         threshold: float = DEFAULT_THRESHOLD,

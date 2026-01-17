@@ -51,6 +51,18 @@ class MoodAnalyzer(BaseAnalyzer):
     _musicnn_model = None
     _mood_models = {}
 
+    @classmethod
+    def clear_model_cache(cls):
+        """モデルキャッシュをクリアしてメモリを解放"""
+        import gc
+        if cls._musicnn_model is not None:
+            del cls._musicnn_model
+            cls._musicnn_model = None
+        for key in list(cls._mood_models.keys()):
+            del cls._mood_models[key]
+        cls._mood_models = {}
+        gc.collect()
+
     def __init__(
         self,
         mood_threshold: float = MOOD_THRESHOLD,

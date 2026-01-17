@@ -13,7 +13,7 @@ class Config:
     DEFAULT_SAMPLE_RATE = 44100
     
     # 対応ファイル形式
-    SUPPORTED_FORMATS = ['.mp3', '.wav', '.flac', '.aiff', '.m4a', '.ogg']
+    SUPPORTED_FORMATS = ['.mp3', '.wav', '.flac', '.aiff', '.m4a', '.mp4', '.ogg']
     
     # タグ出力形式
     TAG_FORMAT = "[{prefix}:{value}]"

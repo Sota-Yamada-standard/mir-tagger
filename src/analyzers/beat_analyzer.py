@@ -52,6 +52,15 @@ class BeatAnalyzer(BaseAnalyzer):
     # PANNsモデルキャッシュ
     _panns_model = None
     
+    @classmethod
+    def clear_model_cache(cls):
+        """モデルキャッシュをクリアしてメモリを解放"""
+        import gc
+        if cls._panns_model is not None:
+            del cls._panns_model
+            cls._panns_model = None
+        gc.collect()
+    
     def __init__(
         self, 
         bpm_change_threshold: float = BPM_CHANGE_THRESHOLD,
