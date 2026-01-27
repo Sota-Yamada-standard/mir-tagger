@@ -135,27 +135,39 @@ class ClubTagProcessor:
     """
     クラブミュージック判定タグを追加するプロセッサー
     
-    判定条件:
+    [Club:Yes] 判定条件（緩め、約3,677曲）:
     1. Genre:house, Genre:techno, Genre:disco, Genre:trance のいずれか
     2. (Genre:electronic OR Genre:electro OR Genre:dance) AND Dance:High
     3. Attr:dance AND (Energy:High OR Energy:VeryHigh) AND Dance:High
+    
+    [Club:SuperYes] 判定条件（厳選、約296曲）:
+    1. Genre:house
+    2. OR Genre:electro
+    3. OR (ファイル名に"remix" AND (Mood:aggressive OR Mood:happy) AND Energy:VeryHigh AND Dance:High)
     """
     
-    # 条件A: 明確にクラブ系のジャンル
+    # [Club:Yes] 条件A: 明確にクラブ系のジャンル
     CLUB_GENRES = {'house', 'techno', 'disco', 'trance'}
     
-    # 条件B: ダンサビリティと組み合わせるジャンル
+    # [Club:Yes] 条件B: ダンサビリティと組み合わせるジャンル
     ELECTRONIC_GENRES = {'electronic', 'electro', 'dance'}
     
+    # [Club:SuperYes] コアジャンル（無条件採用）
+    SUPER_CLUB_GENRES = {'house', 'electro'}
+    
+    # [Club:SuperYes] リミックス条件で許可するムード
+    SUPER_CLUB_MOODS = {'aggressive', 'happy'}
+    
     TAG_NAME = "Club"
-    TAG_VALUE = "Yes"
+    TAG_VALUE_YES = "Yes"
+    TAG_VALUE_SUPER = "SuperYes"
     
     def __init__(self):
         self.tag_writer = TagWriter()
     
     def is_club_music(self, parsed: ParsedTags) -> bool:
         """
-        クラブミュージックかどうかを判定
+        クラブミュージック（Club:Yes）かどうかを判定
         
         Returns:
             True if the track is classified as club music
@@ -181,13 +193,51 @@ class ClubTagProcessor:
         
         return False
     
-    def process_file(self, file_path: str, dry_run: bool = False) -> Dict[str, Any]:
+    def is_super_club_music(self, parsed: ParsedTags, filename: str) -> bool:
+        """
+        厳選クラブミュージック（Club:SuperYes）かどうかを判定
+        
+        条件:
+        1. Genre:house OR Genre:electro（無条件）
+        2. OR (ファイル名に"remix" AND (Mood:aggressive OR happy) AND Energy:VeryHigh AND Dance:High)
+        
+        Returns:
+            True if the track is classified as super club music
+        """
+        genres = set(parsed.get_values('Genre'))
+        dance = parsed.get_value('Dance')
+        energy = parsed.get_value('Energy')
+        moods = set(parsed.get_values('Mood'))
+        
+        # 条件A: コアジャンル（house, electro）は無条件採用
+        if genres & self.SUPER_CLUB_GENRES:
+            return True
+        
+        # 条件B: リミックス曲で高条件を満たす
+        is_remix = 'remix' in filename.lower()
+        has_good_mood = bool(moods & self.SUPER_CLUB_MOODS)
+        
+        if (is_remix and 
+            has_good_mood and 
+            energy == 'VeryHigh' and 
+            dance == 'High'):
+            return True
+        
+        return False
+    
+    def process_file(
+        self, 
+        file_path: str, 
+        dry_run: bool = False,
+        tag_type: str = 'yes'  # 'yes' or 'super'
+    ) -> Dict[str, Any]:
         """
         単一ファイルを処理
         
         Args:
             file_path: 処理するファイルパス
             dry_run: Trueの場合、実際には書き込まない
+            tag_type: 'yes' for [Club:Yes], 'super' for [Club:SuperYes]
         
         Returns:
             {
@@ -199,8 +249,11 @@ class ClubTagProcessor:
                 'error': Optional[str]
             }
         """
+        filename = str(Path(file_path).name)
+        tag_value = self.TAG_VALUE_SUPER if tag_type == 'super' else self.TAG_VALUE_YES
+        
         result = {
-            'file': str(Path(file_path).name),
+            'file': filename,
             'action': 'skipped',
             'is_club': False,
             'tags_before': '',
@@ -217,15 +270,19 @@ class ClubTagProcessor:
             # パース
             parsed = TagParser.parse(comment)
             
-            # 既に[Club:Yes]がある場合はスキップ
-            if parsed.has_tag('Club', 'Yes'):
+            # 既に該当タグがある場合はスキップ
+            if parsed.has_tag('Club', tag_value):
                 result['action'] = 'already_has'
                 result['is_club'] = True
                 result['tags_after'] = comment
                 return result
             
             # クラブミュージック判定
-            is_club = self.is_club_music(parsed)
+            if tag_type == 'super':
+                is_club = self.is_super_club_music(parsed, filename)
+            else:
+                is_club = self.is_club_music(parsed)
+            
             result['is_club'] = is_club
             
             if not is_club:
@@ -234,7 +291,7 @@ class ClubTagProcessor:
                 return result
             
             # タグを追加
-            new_tags = TagParser.add_tag(comment, self.TAG_NAME, self.TAG_VALUE)
+            new_tags = TagParser.add_tag(comment, self.TAG_NAME, tag_value)
             result['tags_after'] = new_tags
             
             if not dry_run:
@@ -259,7 +316,8 @@ class ClubTagProcessor:
         directory: str,
         dry_run: bool = False,
         recursive: bool = True,
-        verbose: bool = True
+        verbose: bool = True,
+        tag_type: str = 'yes'  # 'yes' or 'super'
     ) -> Dict[str, Any]:
         """
         ディレクトリ内の全ファイルを処理
@@ -269,6 +327,7 @@ class ClubTagProcessor:
             dry_run: Trueの場合、実際には書き込まない
             recursive: サブディレクトリも処理するか
             verbose: 進捗を表示するか
+            tag_type: 'yes' for [Club:Yes], 'super' for [Club:SuperYes]
         
         Returns:
             {
@@ -281,6 +340,7 @@ class ClubTagProcessor:
             }
         """
         path = Path(directory)
+        tag_value = self.TAG_VALUE_SUPER if tag_type == 'super' else self.TAG_VALUE_YES
         
         # 対応する拡張子のファイルを収集
         files = []
@@ -301,13 +361,13 @@ class ClubTagProcessor:
             if verbose:
                 print(f"\r[{i}/{len(files)}] Processing...", end='', file=sys.stderr)
             
-            result = self.process_file(str(file_path), dry_run=dry_run)
+            result = self.process_file(str(file_path), dry_run=dry_run, tag_type=tag_type)
             summary['files'].append(result)
             
             if result['action'] == 'added':
                 summary['added'] += 1
                 if verbose:
-                    print(f"\r✅ {result['file']}: [Club:Yes] added", file=sys.stderr)
+                    print(f"\r✅ {result['file']}: [Club:{tag_value}] added", file=sys.stderr)
             elif result['action'] == 'already_has':
                 summary['already_has'] += 1
             elif result['action'] == 'error':
@@ -332,7 +392,9 @@ def main():
     )
     parser.add_argument('path', help='処理するファイルまたはディレクトリ')
     parser.add_argument('--add-club-tag', action='store_true',
-                        help='クラブミュージック判定タグ [Club:Yes] を追加')
+                        help='クラブミュージック判定タグ [Club:Yes] を追加（緩め、約3,677曲）')
+    parser.add_argument('--add-super-club-tag', action='store_true',
+                        help='厳選クラブミュージックタグ [Club:SuperYes] を追加（厳選、約296曲）')
     parser.add_argument('--dry-run', action='store_true',
                         help='実際には書き込まず、結果のみ表示')
     parser.add_argument('--no-recursive', action='store_true',
@@ -342,8 +404,8 @@ def main():
     
     args = parser.parse_args()
     
-    if not args.add_club_tag:
-        print("Error: --add-club-tag オプションを指定してください", file=sys.stderr)
+    if not args.add_club_tag and not args.add_super_club_tag:
+        print("Error: --add-club-tag または --add-super-club-tag を指定してください", file=sys.stderr)
         parser.print_help()
         sys.exit(1)
     
@@ -355,20 +417,24 @@ def main():
     
     processor = ClubTagProcessor()
     
+    # タグタイプを決定
+    tag_type = 'super' if args.add_super_club_tag else 'yes'
+    tag_value = 'SuperYes' if tag_type == 'super' else 'Yes'
+    
     if path.is_file():
         # 単一ファイル処理
-        result = processor.process_file(str(path), dry_run=args.dry_run)
+        result = processor.process_file(str(path), dry_run=args.dry_run, tag_type=tag_type)
         
         prefix = "[DRY-RUN] " if args.dry_run else ""
         
         if result['action'] == 'added':
-            print(f"{prefix}✅ {result['file']}: [Club:Yes] を追加しました")
+            print(f"{prefix}✅ {result['file']}: [Club:{tag_value}] を追加しました")
             print(f"   Before: {result['tags_before']}")
             print(f"   After:  {result['tags_after']}")
         elif result['action'] == 'already_has':
-            print(f"{prefix}⏭️  {result['file']}: 既に [Club:Yes] があります")
+            print(f"{prefix}⏭️  {result['file']}: 既に [Club:{tag_value}] があります")
         elif result['action'] == 'skipped':
-            print(f"{prefix}⏭️  {result['file']}: クラブミュージックではありません")
+            print(f"{prefix}⏭️  {result['file']}: 対象ではありません")
         else:
             print(f"{prefix}❌ {result['file']}: エラー - {result['error']}")
     
@@ -381,13 +447,14 @@ def main():
             str(path),
             dry_run=args.dry_run,
             recursive=not args.no_recursive,
-            verbose=not args.quiet
+            verbose=not args.quiet,
+            tag_type=tag_type
         )
         
         print(f"\n📊 処理結果:", file=sys.stderr)
         print(f"   総ファイル数: {summary['total']}", file=sys.stderr)
-        print(f"   ✅ Club:Yes 追加: {summary['added']}", file=sys.stderr)
-        print(f"   ⏭️  スキップ（非クラブ）: {summary['skipped']}", file=sys.stderr)
+        print(f"   ✅ Club:{tag_value} 追加: {summary['added']}", file=sys.stderr)
+        print(f"   ⏭️  スキップ（対象外）: {summary['skipped']}", file=sys.stderr)
         print(f"   ⏭️  スキップ（既存）: {summary['already_has']}", file=sys.stderr)
         print(f"   ❌ エラー: {summary['errors']}", file=sys.stderr)
 
